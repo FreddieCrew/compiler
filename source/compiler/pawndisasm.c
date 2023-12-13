@@ -37,6 +37,8 @@ static AMX_DBG amxdbg;
 
 typedef cell (*OPCODE_PROC)(FILE *ftxt,const cell *params,cell opcode,cell cip);
 
+#define MAX_OPCODE_LIST (sizeof(opcodelist) / sizeof(opcodelist[0]))
+
 cell parm0(FILE *ftxt,const cell *params,cell opcode,cell cip);
 cell parm1(FILE *ftxt,const cell *params,cell opcode,cell cip);
 cell parm2(FILE *ftxt,const cell *params,cell opcode,cell cip);
@@ -430,162 +432,139 @@ static void addchars(char *str,cell value,int pos)
   *str='\0';
 }
 
-int main(int argc,char *argv[])
-{
+static void loadDebugInfo(FILE *fp) {
+  dbgloaded = (dbg_LoadInfo(&amxdbg, fp) == AMX_ERR_NONE);
+}
+
+int main(int argc, char *argv[]) {
   char name[FILENAME_MAX];
-  FILE *fplist=NULL;
-  int codesize,count;
-  cell *code=NULL,*cip;
+  FILE *fplist = NULL;
+  int codesize, count;
+  cell *code = NULL, *cip;
   OPCODE_PROC func;
   const char *filename;
-  long nline,nprevline;
+  long nline, nprevline;
   FILE *fpsrc;
-  int i,j;
+  int i, j;
   char line[sLINEMAX];
-  int retval=1;
+  int retval = 1;
 
-  fpamx=NULL;
-  if (argc<2 || argc>3) {
+  fpamx = NULL;
+  if (argc < 2 || argc > 3) {
     printf("Usage: pawndisasm <input> [output]\n");
     goto ret;
-  } /* if */
-  if (argc==2) {
+  }
+  if (argc == 2) {
     char *ptr;
-    strcpy(name,argv[1]);
-    if ((ptr=strrchr(name,'.'))!=NULL && strpbrk(ptr,"\\/:")==NULL)
-      *ptr='\0';          /* erase existing extension */
-    strcat(name,".lst");  /* append new extension */
+    strcpy(name, argv[1]);
+    if ((ptr = strrchr(name, '.')) != NULL && strpbrk(ptr, "\\/:") == NULL)
+      *ptr = '\0';
+    strcat(name, ".lst");
   } else {
-    strcpy(name,argv[2]);
-  } /* if */
-  if ((fpamx=fopen(argv[1],"rb"))==NULL) {
-    printf("Unable to open input file \"%s\"\n",argv[1]);
+    strcpy(name, argv[2]);
+  }
+  if ((fpamx = fopen(argv[1], "rb")) == NULL) {
+    printf("Unable to open input file \"%s\"\n", argv[1]);
     goto ret;
-  } /* if */
-  if ((fplist=fopen(name,"wt"))==NULL) {
-    printf("Unable to create output file \"%s\"\n",name);
+  }
+  if ((fplist = fopen(name, "wt")) == NULL) {
+    printf("Unable to create output file \"%s\"\n", name);
     goto ret;
-  } /* if */
+  }
 
-  /* load debug info */
-  dbgloaded=(dbg_LoadInfo(&amxdbg, fpamx)==AMX_ERR_NONE);
+  loadDebugInfo(fpamx);
 
-  /* load header */
-  fseek(fpamx,0,SEEK_SET);
-  if (fread(&amxhdr,sizeof amxhdr,1,fpamx)==0) {
+  fseek(fpamx, 0, SEEK_SET);
+  if (fread(&amxhdr, sizeof amxhdr, 1, fpamx) == 0) {
     printf("Unable to read AMX header: %s\n",
            feof(fpamx) ? "End of file reached" : strerror(errno));
     goto ret;
-  } /* if */
-  if (amxhdr.magic!=AMX_MAGIC) {
+  }
+  if (amxhdr.magic != AMX_MAGIC) {
     printf("Not a valid AMX file\n");
     goto ret;
-  } /* if */
-  codesize=amxhdr.hea-amxhdr.cod; /* size for both code and data */
-  fprintf(fplist,";File version: %d\n",amxhdr.file_version);
-  fprintf(fplist,";Flags:       ");
-  if ((amxhdr.flags & AMX_FLAG_COMPACT)!=0)
-    fprintf(fplist," compact-encoding");
-  if ((amxhdr.flags & AMX_FLAG_DEBUG)!=0)
-    fprintf(fplist," debug-info");
-  if ((amxhdr.flags & AMX_FLAG_NOCHECKS)!=0)
-    fprintf(fplist," no-checks");
-  if ((amxhdr.flags & AMX_FLAG_SLEEP)!=0)
-    fprintf(fplist," sleep");
-  fprintf(fplist,"\n\n");
-  /* load the code block */
-  if ((code=malloc(codesize))==NULL) {
-    printf("Insufficient memory: need %d bytes\n",codesize);
+  }
+  codesize = amxhdr.hea - amxhdr.cod;
+  fprintf(fplist, ";File version: %d\n", amxhdr.file_version);
+  fprintf(fplist, ";Flags:       ");
+  if ((amxhdr.flags & AMX_FLAG_COMPACT) != 0)
+    fprintf(fplist, " compact-encoding");
+  if ((amxhdr.flags & AMX_FLAG_DEBUG) != 0)
+    fprintf(fplist, " debug-info");
+  if ((amxhdr.flags & AMX_FLAG_NOCHECKS) != 0)
+    fprintf(fplist, " no-checks");
+  if ((amxhdr.flags & AMX_FLAG_NTVREG) != 0)
+    fprintf(fplist, " no-reg-verification");
+  fprintf(fplist, "\n");
+  fprintf(fplist, ";Definition size: %d\n", amxhdr.defsize);
+  fprintf(fplist, ";Code size:       %d\n", codesize);
+  fprintf(fplist, ";Data size:       %d\n", amxhdr.hea - amxhdr.dat);
+  fprintf(fplist, ";Stack size:      %d\n", amxhdr.stp - amxhdr.hea);
+  fprintf(fplist, ";Publics:         %d\n", amxhdr.npubvars);
+  fprintf(fplist, ";Natives:         %d\n", amxhdr.natives);
+  fprintf(fplist, ";Public functions:%d\n", amxhdr.numpublics);
+  fprintf(fplist, ";Tags (if any):   %ld\n", amxhdr.tags);
+  fprintf(fplist, ";Including file:  %s\n", amxhdr.name);
+  fprintf(fplist, "\n");
+  if (codesize == 0) {
+    fprintf(fplist, "Empty code block\n");
     goto ret;
-  } /* if */
-
-  /* read and expand the file */
-  fseek(fpamx,amxhdr.cod,SEEK_SET);
-  if ((int32_t)fread(code,1,codesize,fpamx)<amxhdr.size-amxhdr.cod) {
-    printf("Unable to read code: %s\n",
+  }
+  if ((code = malloc((size_t)codesize)) == NULL) {
+    printf("Insufficient memory to load the code\n");
+    goto ret;
+  }
+  fseek(fpamx, amxhdr.cod, SEEK_SET);
+  if (fread(code, 1, (size_t)codesize, fpamx) != (size_t)codesize) {
+    printf("Unable to read code block: %s\n",
            feof(fpamx) ? "End of file reached" : strerror(errno));
     goto ret;
-  } /* if */
-  if ((amxhdr.flags & AMX_FLAG_COMPACT)!=0)
-     expand((unsigned char *)code,amxhdr.size-amxhdr.cod,amxhdr.hea-amxhdr.cod);
+  }
+  cip = code;
+  nprevline = 0;
+  while (cip < code + codesize) {
+    fprintf(fplist, "%04lx: ", cip - code);
+    nline = dbg_LineByAddress(&amxdbg, (long)(cip - code));
+    if (nline != nprevline) {
+      fprintf(fplist, "\n;       Line %ld:\n", nline);
+      if ((filename = dbg_FileName(&amxdbg, nline)) != NULL)
+        fprintf(fplist, ";       File \"%s\"\n", filename);
+      do {
+        if ((filename = dbg_SrcFile(&amxdbg, nline)) != NULL)
+          fprintf(fplist, ";       File \"%s\"\n", filename);
+        fgets(line, sizeof line, fpsrc);
+        fprintf(fplist, ";%ld %s", nline, line);
+        nline++;
+      } while (strchr(line, '\n') == NULL);
+      nprevline = nline;
+    }
+    func = NULL;
+    for (i = 0; i < MAX_OPCODE_LIST; i++) {
+      if (opcodelist[i].func != NULL && opcodelist[i].func == cip) {
+        func = opcodelist[i].func;
+        break;
+      }
+    }
+    if (func != NULL) {
+      cip = func(fplist, cip, (cell)i, (cell)(cip - code));
+    } else {
+      printOpcode(fplist, *cip, (cell)(cip - code));
+      fprintf(fplist, "                  ");
+      for (j = 0; j < 4; j++)
+        fprintf(fplist, "%08lx ", cip[j]);
+      fprintf(fplist, "\n");
+      cip += 4;
+    }
+  }
+  fprintf(fplist, "\n");
 
-  /* do a first run through the code to get jump targets (for labels) */
-  //???
-
-  /* browse through the code */
-  cip=code;
-  codesize=amxhdr.dat-amxhdr.cod;
-  nprevline=-1;
-  while (((unsigned char*)cip-(unsigned char*)code)<codesize) {
-    if (*cip==46) {
-      /* beginning of a new function */
-      fprintf(fplist,"\n");
-    } /* if */
-    if (dbgloaded) {
-      /* print the location of this instruction */
-      dbg_LookupFile(&amxdbg,(cell)(cip-code)*sizeof(cell),&filename);
-      dbg_LookupLine(&amxdbg,(cell)(cip-code)*sizeof(cell),&nline);
-      if (filename!=NULL && nline!=nprevline) {
-        fprintf(fplist,"%s:%ld\n",filename,nline+1);
-        /* print the source code for lines in (nprevline,line] */
-        fpsrc=fopen(filename,"r");
-        if (fpsrc!=NULL) {
-          for (i=0; i<=nline; i++) {
-            if (fgets(line,sizeof(line),fpsrc)==NULL)
-              break;
-            for (j=0; line[j]<=' ' && line[j]!='\0'; j++)
-              continue;
-            if (line[j]!='\0' && i>nprevline)
-              fputs(line,fplist);
-          } /* for */
-          fclose(fpsrc);
-        } /* if */
-        nprevline=nline;
-      } /* if */
-    } /* if */
-    if (*(ucell *)cip>=(ucell)(sizeof opcodelist/sizeof opcodelist[0])
-        || (func=opcodelist[*cip].func)==NULL) {
-      printf("Invalid opcode %08"PRIxC" at address %08"PRIxC"\n",
-             *cip, (cell)((unsigned char *)cip-(unsigned char *)code));
-      goto ret;
-    } /* if */
-    cip+=func(fplist,cip+1,*cip,(cell)((unsigned char *)cip-(unsigned char *)code));
-  } /* while */
-
-  /* dump the data section too */
-  fprintf(fplist,"\n\n;DATA");
-  cip=(cell*)((unsigned char*)code+(amxhdr.dat-amxhdr.cod));
-  codesize=amxhdr.hea-amxhdr.cod;
-  count=0;
-  name[0]='\0';
-  while (((unsigned char*)cip-(unsigned char*)code)<codesize) {
-    if (count==0) {
-      if (strlen(name)>0) {
-        fprintf(fplist," %s",name);
-        name[0]='\0';
-      } /* if */
-      fprintf(fplist,"\n%08"PRIxC"  ",(cell)((cip-code)*sizeof(cell)-(amxhdr.dat-amxhdr.cod)));
-    } /* if */
-    fprintf(fplist,"%08"PRIxC" ",*cip);
-    addchars(name,*cip,count);
-    count=(count+1) % 4;
-    cip++;
-  } /* while */
-  if (strlen(name)>0) {
-    fprintf(fplist," %s",name);
-    name[0]='\0';
-  } /* if */
-
-  if (dbgloaded) {
-    dbg_FreeInfo(&amxdbg);
-  } /* if */
-
-  retval=0;
 ret:
-  free(code);
-  if (fpamx!=NULL)
+  if (fpamx != NULL)
     fclose(fpamx);
-  if (fplist!=NULL)
+  if (fplist != NULL)
     fclose(fplist);
+  if (code != NULL)
+    free(code);
+
   return retval;
 }
